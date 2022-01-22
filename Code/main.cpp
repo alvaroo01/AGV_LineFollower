@@ -1,11 +1,19 @@
-#include <avr/io.h>
-#include <stdio.h>
+/*
+AGV_Linefollower 
+Created by:
+	Álvaro Lopes-Cardoso
+	Fabien Lefebvre
+Date: 
+	22/01/2022
+*/
 
+#include <avr/io.h>									// All the Includes necessary.
+#include <stdio.h>
 #define F_CPU 1000000UL
 #include <util/delay.h>
 #include <avr/interrupt.h>
 
-#define motor1_velocity PD3
+#define motor1_velocity PD3							// Several Defines.
 #define motor1_pinA PD5
 #define motor1_pinB PD4
 #define motor2_velocity PB3
@@ -24,7 +32,7 @@
 #define Sonar_Trig PB7
 
 
-typedef struct
+typedef struct										// Flag struct.
 {
 	unsigned char flag_ir1;
 	unsigned char flag_ir2;
@@ -38,218 +46,195 @@ typedef struct
 } Flags_st;
 
 volatile Flags_st flags={0,0,0,0,0,0};
-	
-typedef struct
-{
-	unsigned char infra1;
-	unsigned char infra2;
-	unsigned char infra3;
-	unsigned char infra4;
-	unsigned char infra5;
-	
-} Infra_st;
 
-volatile Infra_st infra={0,0,0,0,0};
-
-int cnt = 100;
-int distancia;
-int pulse;
-int i;
+int cnt = 100;											// Counter for TC0 Interrupt.
+int cm;													// Stores the distance measured by the sonar. 
+int wave_time;											// Stores the time that the sonar wave took to go from the sonar to the object and back to the sonar
+int sonf;												// Sonar flag for interruption. 
 
 void init(void){
-	DDRC = 0b00000001;                    // Sets PC0, PC1, PC2, PC3, PC4 as inputs for infrareds.
-	DDRD = 0b01111010;		// All the outputs from the motors and led1 and led2
-	DDRB = 0b00001101;		// Output from motor2_velocity and output from 1Hz blinking led
+														// 0 is input and 1 is output.
+														// 1 turns on Led and 0 turns off.
+	DDRC = 0b00000000;									// Sets PC1, PC2, PC3, PC4, PC5 as inputs for infrareds. 
+	DDRD = 0b11111010;									// Motors outputs (IN's and EN1) and Echo pin for Sonar as input and PD7 as output for Sonar Led.
+	DDRB = 0b10001000;									// Motor output (EN2) output for 1Hz blinking led.
 	
-	PORTD = 0b00000000;		// Put to 0 all the pins on PORTD
-	PORTB = 0b00000101;
-	PORTC = 0b00000000;                   // Sets the led 1 to be on by default.
+	PORTD = 0b00000000;									// Clear all the pins on PORTD.
+	PORTB = 0b00000101;									
+	PORTC = 0b00000000;									// Clears Sonar led to be off by default.
 	
 	//Making the 1Hz led
-	TCCR0A = 0b00000010;
-	TCCR0B = 0b00000100;
-	TIMSK0 = 0b00000010;
-	OCR0A  = 19;
 	
-	DDRB |= (1<<Sonar_Trig);
-	DDRD |=(1<<Sonar_Led1);//|Sonar_Led2;
-	TCCR1A = 0x00;
-	EICRA|=(1<<ISC00);
-	EIMSK|=(1<<INT0);
-	PORTD &= ~(1<<Sonar_Led1);
+	TCCR0A = 0b00000010;								// (1<<WGM01) for CTC mode.						
+	TCCR0B = 0b00000100;								// (1<<CS02) Prescaler of 256 .
+	TIMSK0 = 0b00000010;								// (1<<OCIE0A) Enables Compare match A .
+	OCR0A  = 19;										
 	
-	TCCR1B = 0b00001011;				  // Sets CTC mode and prescaler to 64.	-> (1<<WGM12) | (1<<CS11) | (1<<CS10)
-	//TIMSK1 = 0b00000010;				  // Chooses compare match A which will enable the interruption every time the ocr is reached. -> (1<<OCIE1A)
-	OCR1A = 391;						  // The value of ocr required to have a 1s period (1Hz).
+	TCCR1A = 0b00000000;								
+	EICRA = 0b00000001;									// (1<<ISC00).
+	EIMSK = 0b00000001;								    // (1<<INT0).
 	
-	TCCR2A = 0b10100011;    // bit7 a 1 -> Clear OC2B and OC2A on compare match | bit0 e bit1 a 1-> Define operation mode as Fast PWM
-	TCCR2B |= (1<<CS20) | (1<<CS22);	// 128 prescaler
-	OCR2B=0;				// left motor
-	OCR2A=0;				// right motor
+	TCCR2A = 0b10100011;							    // Clear OC2B and OC2A on compare match and define operation mode as Fast PWM.
+	TCCR2B = 0b00000101;								// (1<<CS22) (1<<CS20) Prescaler of 128.
+	OCR2B=0;											// Left motor pwm.
+	OCR2A=0;											// Right motor pwm.
 	
-	sei();								  // Activates all interruptions.
+	sei();												// Activates all interruptions.
 }
 
 
 void sonar(void)
 {
-	PORTB|=(1<<Sonar_Trig);        //
-	_delay_us(10);
-	PORTB &=~(1<<Sonar_Trig);    // entra no pulso baixo
+	PORTB|=(1<<Sonar_Trig);								// Trig pin in set on HIGH.
+	_delay_us(10);										// Waits for 10us. 
+	PORTB &=~(1<<Sonar_Trig);							// Trig pin in set on LOW.
+	cm = (wave_time/58);								// The distance is calculated.		
 
-	distancia = (pulse/58);
-
-	if(distancia<=25)
+	if(cm<=25)											// If the distance is less than 25cm then...
 	{
-		flags.flag_sonar = 1;
-		PORTD |= (1<<Sonar_Led1);
+		flags.flag_sonar = 1;							// Sonar flag goes to 1.
+		PORTD |= (1<<Sonar_Led1);						// Sonar led turns on
 		}else{
-		PORTD &= ~(1<<Sonar_Led1);
-		flags.flag_sonar = 0;
-
+		PORTD &= ~(1<<Sonar_Led1);						// Sonar led turns off
+		flags.flag_sonar = 0;							// Sonar flag goes to 0.
 	}
 }
 
 
 
 
-void forward (int vel){
-	//M1
-	OCR2B = vel;
+void forward (int vel){									// Car goes forward.
+	
+	OCR2B = vel;										// Sets the speed of both motors
 	OCR2A = vel;
-	PORTD |= (1<<motor1_pinA);
+	//M1
+	PORTD |= (1<<motor1_pinA);							// Current flows in a certain direction allowing both motors to be in the forward direction
 	PORTD &= ~(1<<motor1_pinB);
 	//M2
-	PORTD |= (1<<motor2_pinA);
+	PORTD |= (1<<motor2_pinA);	
 	PORTD &= ~(1<<motor2_pinB);
 	
 }
 
-void backwards (int vel){
+void backwards (int vel){								// Car goes backwards.
 	//M1
-	OCR2B = vel;
+	OCR2B = vel;										// Sets the speed of both motors.
 	OCR2A = vel;
-	PORTD &= ~(1<<motor1_pinA);
-	PORTD |= (1<<motor1_pinB);
+	PORTD &= ~(1<<motor1_pinA);							// Current flows in a certain direction allowing both motors to be in the backwards direction.
+	PORTD |= (1<<motor1_pinB);							
 	//M2
 	PORTD &= ~(1<<motor2_pinA);
 	PORTD |= (1<<motor2_pinB);
 	
 }
 
-void stop (){
+void stop (){											// Car stops.
 	//M1
-	OCR2B = 0;
+	OCR2B = 0;											// Sets the speed of both motors at 0.
 	OCR2A = 0;
-	PORTD &= ~(1<<motor1_pinA);
+	PORTD &= ~(1<<motor1_pinA);							// No current goes to the motors.
 	PORTD &= ~(1<<motor1_pinB);
 	//M2
 	PORTD &= ~(1<<motor2_pinA);
 	PORTD &= ~(1<<motor2_pinB);
 }
 
-void left (int vel1, int vel2){
-	//left motor is A
-	//right motor is B
-	OCR2B = vel1;
+void left (int vel1, int vel2){							// Car goes right (The name of the function relates to the motor thats rotating, so if the left motor is rotating and the right one isn't the car goes right).
+	//right motor is A	
+	//left motor is B
+	OCR2B = vel1;										// Sets the speed of both motors.
 	OCR2A = vel2;
-	PORTD |= (1<<motor1_pinA);
+	PORTD |= (1<<motor1_pinA);							// Current flows in a certain direction allowing both motors to be in the forward direction.
 	PORTD &= ~(1<<motor1_pinB);
 }
 
-void right (int vel1, int vel2){
-	//left motor is A
-	//right motor is B
-	OCR2B = vel2;
+void right (int vel1, int vel2){						// Car goes left (The name of the function relates to the motor thats rotating, so if the right motor is rotating and the left one isn't the car goes left).
+	//right motor is A
+	//left motor is B
+	OCR2B = vel2;										// Sets the speed of both motors.
 	OCR2A = vel1;
-	PORTD |= (1<<motor1_pinA);
-	PORTD &= ~(1<<motor1_pinB);
+	PORTD |= (1<<motor1_pinA);							// Current flows in a certain direction allowing both motors to be in the forward direction.
+	PORTD &= ~(1<<motor1_pinB);	
 }
 	
-void start (int start_vel){
-	if ((PINC | 0b11000001) == 0b11000001)
+void start (int start_vel){								// Function that determines when the car starts.
+	if ((PINC | 0b11000001) == 0b11000001)				// If every IR Sensor is detecting black then the car starts.	
 		{
-		forward(start_vel);
-		flags.start_flag = 1;
+		forward(start_vel);								// The car starts going forward.
+		flags.start_flag = 1;							// Changes the start_flag to 1.
 		}
 		}
 
-void ir_sensors_test2(	int start_vel, int low_speed){
-	sonar();
-	if ((PINC | 0b11111101) == 0b11111101){
-		while(!((PINC | 0b11110111) == 0b11110111)){
-			right(start_vel,0);
+void ir_sensors(	int start_vel, int low_speed){			// Function that determines when the car changes direction or stops when it has already started.
+	sonar();												// Runs the sonar() funciton.
+	if ((PINC | 0b11111101) == 0b11111101){					// If IR1 is detecting black...
+		while(!((PINC | 0b11110111) == 0b11110111)){		// While IR3 isn't detecting black...
+			right(start_vel,0);								// Car goes left.
 		}		
 		
-		} else if ((PINC | 0b11011111) == 0b11011111){
-		while(!((PINC | 0b11110111) == 0b11110111)){
-			left(start_vel,0);
+		} else if ((PINC | 0b11011111) == 0b11011111){		// If IR5 is detecting black...
+		while(!((PINC | 0b11110111) == 0b11110111)){		// While IR3 isn't detecting black...
+			left(start_vel,0);								// Car goes right.
 		}
 		
-		} else if ((PINC | 0b11101111) == 0b11101111){
-			left(start_vel,0);
+		} else if ((PINC | 0b11101111) == 0b11101111){		// If IR4 is detecting black...
+			left(start_vel,0);								// Car goes right.
 		
-		} else if ((PINC | 0b11111011) == 0b11111011){
-			right(start_vel,0);
-		} else if (flags.flag_sonar==1){
-		while(!(flags.flag_sonar==0)) {
-			stop();
-			sonar();
-		}
-		forward(80);
+		} else if ((PINC | 0b11111011) == 0b11111011){		// If IR2 is detecting black...
+			right(start_vel,0);								// Car goes left.
+			
+		} else if (flags.flag_sonar==1){					// If Sonar detects an object...
+			while(!(flags.flag_sonar==0)) {					// While it doesn't stop detecting....
+				stop();										// Car stops.
+				sonar();									// Reads the sonar again.
+			}
+			forward(80);									// Car goes forward with higher speed to be able to have enought startign torque.
 		
-		} else forward(start_vel);
+		} else forward(start_vel);							// Car goes forward normally.
 	
 }
 
 
-int main(void)
-{
-	init();
-	int velocity =	35;
-	while (1)
+int main(void)												// Main function
+{	
+	init();													// Runs the init() function.
+	int velocity =	35;										// Sets main velocity of the car. 	
+	while (1)												// While loop.
 	{
-		flags.start_flag = 0;
-		sonar();
-		if(flags.flag_sonar == 0) {
-		start(velocity);	
-		} else stop();		
-		while(flags.start_flag == 1){
-			ir_sensors_test2(velocity, 25);
+		flags.start_flag = 0;								// Sets start flag to 0. Just a precaution. 
+		sonar();											// Runs the sonar() function.
+		if(flags.flag_sonar == 0) {							// If sonar isn't detecting anything...
+		start(velocity);									// Starts the car.
+		} else stop();										// If the above conditions weren't met then the car stops.
+		while(flags.start_flag == 1){						// If the car has started...
+			ir_sensors(velocity, 25);						// Run the function ir_sensors on a loop. 
 			}
 		}
 	}
 
 
-
-
-
-ISR(TIMER0_COMPA_vect)                    // Interruption of TC1.
+ISR(TIMER0_COMPA_vect)										// Interruption generated by Timer0.
 {
-	
-	
-	cnt--;
-	if (cnt==0){
-		PORTB ^= (1<<led_1hZ);					  // Swap the state of the bit (0 to 1 or 1 to 0).
-		cnt = 100;
+	cnt--;													// Decrements the counter.
+	if (cnt==0){											// If the counter has reached 0 then...
+		PORTB ^= (1<<led_1hZ);								// Swap the state of the bit (0 to 1 or 1 to 0).
+		cnt = 100;											// Return counter to 100. 
 	}
 }
 
-ISR(INT0_vect)
+ISR(INT0_vect)												// Interruption for the sonar.	
 {
-	if(i == 0)
+	if(sonf == 0)											// The sonf is a flag that makes sure that the Low-High state change initiates the timer and the High-Low state change stops the timer.
 	{
-
-		TCCR1B |= 1<<CS10;
-		TCNT1 = 0;
-		i = 1;
+		TCCR1B |= 1<<CS10;									// By giving it a prescaler we initiate the timer.			
+		TCNT1 = 0;											// We set TCNT1 to zero in order to clear it to start the count.
+		sonf = 1;											
 	}
 	else
 	{
-
-		pulse = TCNT1;
-		TCCR1B = 0;
-		i = 0;
+		wave_time = TCNT1;									// Retrieving how much time passed.
+		TCCR1B = 0;											// Turning off the Timer.
+		sonf = 0;
 	}
 }
 
