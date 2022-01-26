@@ -1,0 +1,78 @@
+#define F_CPU 1000000UL
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h> //abs
+#define Sonar_Led1 PD7
+#define Sonar_Trig PB7
+
+int distancia;
+int pulse;
+int i;
+
+void setup(void){
+    //Sonar
+    DDRB |= (1<<Sonar_Trig);
+    DDRD |=(1<<Sonar_Led1);//|Sonar_Led2;
+    TCCR1A = 0x00;
+    EICRA|=(1<<ISC00);
+    EIMSK|=(1<<INT0);
+    PORTD &= ~(1<<Sonar_Led1);
+	sei();
+    }
+
+void sonar(void)
+{
+        PORTB|=(1<<Sonar_Trig);        //
+        _delay_us(10);
+        PORTB &=~(1<<Sonar_Trig);    // entra no pulso baixo
+        _delay_ms(60);
+
+        distancia = (pulse/58);
+
+        if(distancia<=25)
+        {
+
+            PORTD |= (1<<Sonar_Led1);
+        }else{
+            PORTD &= ~(1<<Sonar_Led1);
+
+            }
+}
+ISR(INT0_vect)
+{
+    if(i == 0)
+    {
+       // PORTD |= (1<<Sonar_Led1);
+        TCCR1B |= 1<<CS10;
+        TCNT1 = 0;
+        i = 1;
+    }
+    else
+    {
+
+        pulse = TCNT1;
+      //  PORTD &= ~(1<<Sonar_Led1);
+        //pulse2 = TCNT2;
+        /* PORTD &= ~(1<<Led);*/
+        TCCR1B = 0;
+
+    //    TCNT1 = 0;
+        i = 0;
+    }
+}
+
+
+
+
+int main()
+{
+    setup();
+
+    while(1)
+    {
+        sonar();
+    }
+}
